@@ -26,7 +26,49 @@ struct LimitState {
 private let limitStatePollInterval: TimeInterval = 20.0
 private let petFramePollInterval: TimeInterval = 0.12
 private let ringsVisibleDefaultsKey = "CodexPetLimitRings.ringsVisible"
+private let outerColorDefaultsKey = "CodexPetLimitRings.outerColor"
+private let innerColorDefaultsKey = "CodexPetLimitRings.innerColor"
+private let idleOpacityDefaultsKey = "CodexPetLimitRings.idleOpacity"
+private let idleScaleDefaultsKey = "CodexPetLimitRings.idleScale"
 private let liveUsageURL = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
+
+struct RingVisualSettings {
+    var outerColorName: String
+    var innerColorName: String
+    var idleOpacity: CGFloat
+    var idleScale: CGFloat
+
+    static let defaultOuterColor = "mint"
+    static let defaultInnerColor = "blue"
+    static let defaultIdleOpacity: CGFloat = 0.10
+    static let defaultIdleScale: CGFloat = 0.70
+
+    static func load() -> RingVisualSettings {
+        let defaults = UserDefaults.standard
+        return RingVisualSettings(
+            outerColorName: defaults.string(forKey: outerColorDefaultsKey) ?? defaultOuterColor,
+            innerColorName: defaults.string(forKey: innerColorDefaultsKey) ?? defaultInnerColor,
+            idleOpacity: CGFloat(defaults.object(forKey: idleOpacityDefaultsKey) as? Double ?? Double(defaultIdleOpacity)),
+            idleScale: CGFloat(defaults.object(forKey: idleScaleDefaultsKey) as? Double ?? Double(defaultIdleScale))
+        )
+    }
+
+    func save() {
+        let defaults = UserDefaults.standard
+        defaults.set(outerColorName, forKey: outerColorDefaultsKey)
+        defaults.set(innerColorName, forKey: innerColorDefaultsKey)
+        defaults.set(Double(idleOpacity), forKey: idleOpacityDefaultsKey)
+        defaults.set(Double(idleScale), forKey: idleScaleDefaultsKey)
+    }
+
+    static func reset() {
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: outerColorDefaultsKey)
+        defaults.removeObject(forKey: innerColorDefaultsKey)
+        defaults.removeObject(forKey: idleOpacityDefaultsKey)
+        defaults.removeObject(forKey: idleScaleDefaultsKey)
+    }
+}
 
 private struct EventPayload: Decodable {
     var type: String
@@ -299,6 +341,17 @@ struct LimitRingRenderer {
     var state: LimitState
     var phase: Double
     var showsReadout: Bool = false
+    var hoverProgress: CGFloat = 0
+    var settings: RingVisualSettings = .load()
+
+    private var visualStrength: CGFloat {
+        settings.idleOpacity + (1.0 - settings.idleOpacity) * easedHoverProgress
+    }
+
+    private var easedHoverProgress: CGFloat {
+        let progress = min(max(hoverProgress, 0), 1)
+        return progress * progress * (3.0 - 2.0 * progress)
+    }
 
     func draw(in rect: CGRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
@@ -311,25 +364,27 @@ struct LimitRingRenderer {
         let urgency = max(urgency(for: state.primary), urgency(for: state.secondary))
         let breathe = CGFloat((sin(phase * 2.0 * .pi) + 1.0) * 0.5)
         let pulse = CGFloat(1.0 + urgency * 0.025 * breathe)
-        let outerRadius = (minSide * 0.5 - 16.0) * pulse
-        let innerRadius = outerRadius - 13.0
-
-        drawHalo(context, center: center, radius: outerRadius, urgency: CGFloat(urgency), breathe: breathe)
-        drawTicks(context, center: center, radius: outerRadius + 5.0)
+        let strength = visualStrength
+        let radiusScale = settings.idleScale + (1.0 - settings.idleScale) * easedHoverProgress
+        let outerRadius = (minSide * 0.5 - 16.0) * pulse * radiusScale
+        let innerRadius = outerRadius - (13.0 * (0.78 + 0.22 * easedHoverProgress))
+        drawHalo(context, center: center, radius: outerRadius, urgency: CGFloat(urgency), breathe: breathe, strength: strength)
+        drawTicks(context, center: center, radius: outerRadius + 5.0, strength: strength)
 
         if let primary = state.primary {
             drawRing(
                 context,
                 center: center,
                 radius: outerRadius,
-                lineWidth: 7.0,
+                lineWidth: 7.0 * (0.74 + 0.26 * easedHoverProgress),
                 bucket: primary,
                 color: color(forRemaining: primary.remainingPercent, role: .primary),
                 trackAlpha: 0.20,
-                phase: phase
+                phase: phase,
+                strength: strength
             )
         } else {
-            drawMissingRing(context, center: center, radius: outerRadius, lineWidth: 7.0)
+            drawMissingRing(context, center: center, radius: outerRadius, lineWidth: 7.0 * (0.74 + 0.26 * easedHoverProgress), strength: strength)
         }
 
         if let secondary = state.secondary {
@@ -337,16 +392,17 @@ struct LimitRingRenderer {
                 context,
                 center: center,
                 radius: innerRadius,
-                lineWidth: 4.5,
+                lineWidth: 4.5 * (0.76 + 0.24 * easedHoverProgress),
                 bucket: secondary,
                 color: color(forRemaining: secondary.remainingPercent, role: .secondary),
                 trackAlpha: 0.14,
-                phase: phase + 0.18
+                phase: phase + 0.18,
+                strength: strength
             )
         }
 
-        drawModelLimitDots(context, center: center, radius: outerRadius + 11.0, state: state)
-        if showsReadout {
+        drawModelLimitDots(context, center: center, radius: outerRadius + 11.0, state: state, strength: strength)
+        if showsReadout && hoverProgress > 0.82 {
             drawLimitReadouts(context, center: center, outerRadius: outerRadius, innerRadius: innerRadius, bounds: rect)
         }
         context.restoreGState()
@@ -370,26 +426,28 @@ struct LimitRingRenderer {
         return min(max((45.0 - bucket.remainingPercent) / 45.0, 0.0), 1.0)
     }
 
-    private func drawHalo(_ context: CGContext, center: CGPoint, radius: CGFloat, urgency: CGFloat, breathe: CGFloat) {
+    private func drawHalo(_ context: CGContext, center: CGPoint, radius: CGFloat, urgency: CGFloat, breathe: CGFloat, strength: CGFloat) {
+        guard strength > 0.5 else { return }
         context.saveGState()
         let color = NSColor(calibratedRed: 0.23 + urgency * 0.55, green: 0.85 - urgency * 0.30, blue: 0.78 - urgency * 0.48, alpha: 0.22 + urgency * 0.16)
         context.setLineCap(.round)
-        context.setShadow(offset: .zero, blur: 14.0 + urgency * breathe * 5.0, color: color.withAlphaComponent(0.55).cgColor)
-        context.setStrokeColor(color.withAlphaComponent(0.20).cgColor)
+        context.setShadow(offset: .zero, blur: 14.0 + urgency * breathe * 5.0, color: color.withAlphaComponent(0.55 * strength).cgColor)
+        context.setStrokeColor(color.withAlphaComponent(0.20 * strength).cgColor)
         context.setLineWidth(8.0)
         context.addArc(center: center, radius: radius + 3.0, startAngle: 0, endAngle: CGFloat.pi * 2.0, clockwise: false)
         context.strokePath()
         context.setShadow(offset: .zero, blur: 0.0, color: nil)
-        context.setStrokeColor(NSColor(calibratedWhite: 1.0, alpha: 0.045).cgColor)
+        context.setStrokeColor(NSColor(calibratedWhite: 1.0, alpha: 0.045 * strength).cgColor)
         context.setLineWidth(1.0)
         context.addArc(center: center, radius: radius + 13.0, startAngle: 0, endAngle: CGFloat.pi * 2.0, clockwise: false)
         context.strokePath()
         context.restoreGState()
     }
 
-    private func drawTicks(_ context: CGContext, center: CGPoint, radius: CGFloat) {
+    private func drawTicks(_ context: CGContext, center: CGPoint, radius: CGFloat, strength: CGFloat) {
+        guard strength > 0.5 else { return }
         context.saveGState()
-        context.setStrokeColor(NSColor(calibratedWhite: 1.0, alpha: 0.10).cgColor)
+        context.setStrokeColor(NSColor(calibratedWhite: 1.0, alpha: 0.10 * strength).cgColor)
         context.setLineWidth(1.2)
         context.setLineCap(.round)
         for i in 0..<24 {
@@ -412,7 +470,8 @@ struct LimitRingRenderer {
         bucket: LimitBucket,
         color: NSColor,
         trackAlpha: CGFloat,
-        phase: Double
+        phase: Double,
+        strength: CGFloat
     ) {
         let start = -CGFloat.pi / 2.0
         let remaining = CGFloat(bucket.remainingPercent / 100.0)
@@ -421,36 +480,40 @@ struct LimitRingRenderer {
         context.saveGState()
         context.setLineCap(.round)
         context.setLineWidth(lineWidth)
-        context.setStrokeColor(NSColor(calibratedWhite: 0.0, alpha: 0.22).cgColor)
+        context.setStrokeColor(NSColor(calibratedWhite: 0.0, alpha: 0.08 * strength).cgColor)
         context.addArc(center: center, radius: radius + 1.0, startAngle: 0, endAngle: CGFloat.pi * 2.0, clockwise: false)
         context.strokePath()
 
-        context.setStrokeColor(NSColor(calibratedWhite: 1.0, alpha: trackAlpha).cgColor)
+        context.setStrokeColor(NSColor(calibratedWhite: 1.0, alpha: trackAlpha * strength).cgColor)
         context.addArc(center: center, radius: radius, startAngle: 0, endAngle: CGFloat.pi * 2.0, clockwise: false)
         context.strokePath()
 
-        context.setShadow(offset: .zero, blur: 10.0, color: color.withAlphaComponent(0.42).cgColor)
-        context.setStrokeColor(color.withAlphaComponent(0.30).cgColor)
-        context.setLineWidth(lineWidth + 6.0)
+        if strength > 0.5 {
+            context.setShadow(offset: .zero, blur: 10.0, color: color.withAlphaComponent(0.42 * strength).cgColor)
+            context.setStrokeColor(color.withAlphaComponent(0.30 * strength).cgColor)
+            context.setLineWidth(lineWidth + 6.0)
+            context.addArc(center: center, radius: radius, startAngle: start, endAngle: end, clockwise: false)
+            context.strokePath()
+        }
+
+        context.setShadow(offset: .zero, blur: 4.0 * strength, color: color.withAlphaComponent(0.52 * strength).cgColor)
+        context.setStrokeColor(color.withAlphaComponent(0.88 * strength).cgColor)
+        context.setLineWidth(lineWidth * (showsReadout ? 1.0 : 0.70))
         context.addArc(center: center, radius: radius, startAngle: start, endAngle: end, clockwise: false)
         context.strokePath()
 
-        context.setShadow(offset: .zero, blur: 4.0, color: color.withAlphaComponent(0.52).cgColor)
-        context.setStrokeColor(color.cgColor)
-        context.setLineWidth(lineWidth)
-        context.addArc(center: center, radius: radius, startAngle: start, endAngle: end, clockwise: false)
-        context.strokePath()
-
-        let glintAngle = start + CGFloat(phase.truncatingRemainder(dividingBy: 1.0)) * CGFloat.pi * 2.0
-        let glint = point(center: center, radius: radius, angle: glintAngle)
-        context.setFillColor(NSColor(calibratedWhite: 1.0, alpha: 0.38).cgColor)
-        context.fillEllipse(in: CGRect(x: glint.x - 1.8, y: glint.y - 1.8, width: 3.6, height: 3.6))
+        if strength > 0.5 {
+            let glintAngle = start + CGFloat(phase.truncatingRemainder(dividingBy: 1.0)) * CGFloat.pi * 2.0
+            let glint = point(center: center, radius: radius, angle: glintAngle)
+            context.setFillColor(NSColor(calibratedWhite: 1.0, alpha: 0.38 * strength).cgColor)
+            context.fillEllipse(in: CGRect(x: glint.x - 1.8, y: glint.y - 1.8, width: 3.6, height: 3.6))
+        }
         context.restoreGState()
     }
 
-    private func drawMissingRing(_ context: CGContext, center: CGPoint, radius: CGFloat, lineWidth: CGFloat) {
+    private func drawMissingRing(_ context: CGContext, center: CGPoint, radius: CGFloat, lineWidth: CGFloat, strength: CGFloat) {
         context.saveGState()
-        context.setStrokeColor(NSColor(calibratedWhite: 1.0, alpha: 0.16).cgColor)
+        context.setStrokeColor(NSColor(calibratedWhite: 1.0, alpha: 0.16 * strength).cgColor)
         context.setLineWidth(lineWidth)
         context.setLineCap(.round)
         context.addArc(center: center, radius: radius, startAngle: 0, endAngle: CGFloat.pi * 1.74, clockwise: false)
@@ -462,11 +525,11 @@ struct LimitRingRenderer {
         var readouts: [LimitReadout] = []
         if let primary = state.primary {
             readouts.append(makeReadout(
-                text: formatPercent(primary.remainingPercent),
+                label: "Outer \(windowLabel(for: primary) ?? "short")",
+                bucket: primary,
                 center: center,
                 ringRadius: outerRadius,
-                labelRadius: outerRadius + 22.0,
-                remainingPercent: primary.remainingPercent,
+                labelRadius: outerRadius + 31.0,
                 color: color(forRemaining: primary.remainingPercent, role: .primary),
                 bounds: bounds
             ))
@@ -474,11 +537,11 @@ struct LimitRingRenderer {
 
         if let secondary = state.secondary {
             readouts.append(makeReadout(
-                text: formatPercent(secondary.remainingPercent),
+                label: "Inner weekly",
+                bucket: secondary,
                 center: center,
                 ringRadius: innerRadius,
-                labelRadius: innerRadius + 21.0,
-                remainingPercent: secondary.remainingPercent,
+                labelRadius: innerRadius + 34.0,
                 color: color(forRemaining: secondary.remainingPercent, role: .secondary),
                 bounds: bounds
             ))
@@ -490,18 +553,24 @@ struct LimitRingRenderer {
     }
 
     private func makeReadout(
-        text: String,
+        label: String,
+        bucket: LimitBucket,
         center: CGPoint,
         ringRadius: CGFloat,
         labelRadius: CGFloat,
-        remainingPercent: Double,
         color: NSColor,
         bounds: CGRect
     ) -> LimitReadout {
+        let text = [
+            label,
+            "\(formatPercent(bucket.remainingPercent)) left",
+            resetText(for: bucket)
+        ].compactMap { $0 }.joined(separator: "\n")
+        let remainingPercent = bucket.remainingPercent
         let angle = -CGFloat.pi / 2.0 + CGFloat(max(remainingPercent, 1.8) / 100.0) * CGFloat.pi * 2.0
         let ringPoint = point(center: center, radius: ringRadius, angle: angle)
         let labelPoint = point(center: center, radius: labelRadius, angle: angle)
-        let labelSize = CGSize(width: text.count > 3 ? 45 : 38, height: 22)
+        let labelSize = labelSize(for: text)
         var labelRect = CGRect(
             x: labelPoint.x - labelSize.width / 2,
             y: labelPoint.y - labelSize.height / 2,
@@ -510,6 +579,15 @@ struct LimitRingRenderer {
         )
         labelRect = clamp(labelRect, inside: bounds)
         return LimitReadout(text: text, ringPoint: ringPoint, labelRect: labelRect, color: color, angle: angle)
+    }
+
+    private func labelSize(for text: String) -> CGSize {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let longest = lines.map(\.count).max() ?? 4
+        return CGSize(
+            width: max(74.0, min(128.0, CGFloat(longest) * 6.0 + 16.0)),
+            height: CGFloat(lines.count) * 13.0 + 10.0
+        )
     }
 
     private func resolveReadoutOverlaps(_ readouts: [LimitReadout], bounds: CGRect) -> [LimitReadout] {
@@ -590,16 +668,17 @@ struct LimitRingRenderer {
         context.strokePath()
 
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: .semibold),
-            .foregroundColor: NSColor(calibratedWhite: 1.0, alpha: 0.92)
+            .font: NSFont.monospacedSystemFont(ofSize: 9.3, weight: .semibold),
+            .foregroundColor: NSColor(calibratedWhite: 1.0, alpha: 0.92),
+            .paragraphStyle: centeredParagraphStyle()
         ]
         let attributed = NSAttributedString(string: readout.text, attributes: attrs)
-        let textSize = attributed.size()
-        attributed.draw(at: CGPoint(x: readout.labelRect.midX - textSize.width / 2, y: readout.labelRect.midY - textSize.height / 2 + 0.5))
+        attributed.draw(in: readout.labelRect.insetBy(dx: 6.0, dy: 5.0))
         context.restoreGState()
     }
 
-    private func drawModelLimitDots(_ context: CGContext, center: CGPoint, radius: CGFloat, state: LimitState) {
+    private func drawModelLimitDots(_ context: CGContext, center: CGPoint, radius: CGFloat, state: LimitState, strength: CGFloat) {
+        guard strength > 0.5 else { return }
         let dots = Array(state.additional.prefix(8))
         guard dots.count > 0 else { return }
         context.saveGState()
@@ -607,8 +686,8 @@ struct LimitRingRenderer {
             let angle = -CGFloat.pi / 2.0 + CGFloat(index) / CGFloat(max(dots.count, 1)) * CGFloat.pi * 2.0
             let dot = point(center: center, radius: radius, angle: angle)
             let color = color(forRemaining: item.bucket.remainingPercent, role: .primary)
-            context.setShadow(offset: .zero, blur: 5.0, color: color.withAlphaComponent(0.35).cgColor)
-            context.setFillColor(color.withAlphaComponent(0.82).cgColor)
+            context.setShadow(offset: .zero, blur: 5.0, color: color.withAlphaComponent(0.35 * strength).cgColor)
+            context.setFillColor(color.withAlphaComponent(0.82 * strength).cgColor)
             context.fillEllipse(in: CGRect(x: dot.x - 2.4, y: dot.y - 2.4, width: 4.8, height: 4.8))
         }
         context.restoreGState()
@@ -622,9 +701,28 @@ struct LimitRingRenderer {
             return NSColor(calibratedRed: 1.00, green: 0.68, blue: 0.20, alpha: 0.96)
         }
         if role == .secondary {
-            return NSColor(calibratedRed: 0.36, green: 0.70, blue: 1.00, alpha: 0.90)
+            return paletteColor(named: settings.innerColorName)
         }
-        return NSColor(calibratedRed: 0.24, green: 0.92, blue: 0.74, alpha: 0.96)
+        return paletteColor(named: settings.outerColorName)
+    }
+
+    private func paletteColor(named name: String) -> NSColor {
+        switch name {
+        case "teal":
+            return NSColor(calibratedRed: 0.18, green: 0.86, blue: 0.86, alpha: 0.96)
+        case "blue":
+            return NSColor(calibratedRed: 0.36, green: 0.70, blue: 1.00, alpha: 0.90)
+        case "violet":
+            return NSColor(calibratedRed: 0.66, green: 0.50, blue: 1.00, alpha: 0.94)
+        case "pink":
+            return NSColor(calibratedRed: 1.00, green: 0.42, blue: 0.72, alpha: 0.94)
+        case "gold":
+            return NSColor(calibratedRed: 1.00, green: 0.72, blue: 0.26, alpha: 0.96)
+        case "white":
+            return NSColor(calibratedWhite: 0.95, alpha: 0.88)
+        default:
+            return NSColor(calibratedRed: 0.24, green: 0.92, blue: 0.74, alpha: 0.96)
+        }
     }
 
     private func point(center: CGPoint, radius: CGFloat, angle: CGFloat) -> CGPoint {
@@ -636,6 +734,48 @@ struct LimitRingRenderer {
             return "\(Int(percent.rounded()))%"
         }
         return String(format: "%.1f%%", percent)
+    }
+
+    private func windowLabel(for bucket: LimitBucket) -> String? {
+        guard let minutes = bucket.windowMinutes else { return nil }
+        if minutes >= 60 {
+            let hours = minutes / 60.0
+            if abs(hours.rounded() - hours) < 0.05 {
+                return "\(Int(hours.rounded()))h"
+            }
+            return String(format: "%.1fh", hours)
+        }
+        return "\(Int(minutes.rounded()))m"
+    }
+
+    private func resetText(for bucket: LimitBucket) -> String? {
+        guard let resetAt = bucket.resetAt else { return nil }
+        let resetDate = Date(timeIntervalSince1970: resetAt)
+        let interval = resetDate.timeIntervalSinceNow
+        if interval <= 0 {
+            return "reset now"
+        }
+
+        if interval < 24 * 60 * 60 {
+            let formatter = DateFormatter()
+            formatter.locale = .current
+            formatter.dateStyle = .none
+            formatter.timeStyle = .short
+            return "resets \(formatter.string(from: resetDate))"
+        }
+
+        let formatter = DateFormatter()
+        formatter.locale = .current
+        formatter.dateFormat = interval < 7 * 24 * 60 * 60 ? "EEE h:mm a" : "M/d h:mm a"
+        return "resets \(formatter.string(from: resetDate))"
+    }
+
+    private func centeredParagraphStyle() -> NSParagraphStyle {
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        style.lineBreakMode = .byTruncatingTail
+        style.lineSpacing = 0
+        return style
     }
 }
 
@@ -649,11 +789,23 @@ final class LimitRingView: NSView {
     var showsReadout: Bool = false {
         didSet { needsDisplay = true }
     }
+    var hoverProgress: CGFloat = 0 {
+        didSet { needsDisplay = true }
+    }
+    var settings: RingVisualSettings = .load() {
+        didSet { needsDisplay = true }
+    }
 
     override var isOpaque: Bool { false }
 
     override func draw(_ dirtyRect: NSRect) {
-        LimitRingRenderer(state: state, phase: phase, showsReadout: showsReadout).draw(in: bounds)
+        LimitRingRenderer(
+            state: state,
+            phase: phase,
+            showsReadout: showsReadout,
+            hoverProgress: hoverProgress,
+            settings: settings
+        ).draw(in: bounds)
     }
 }
 
@@ -675,11 +827,13 @@ final class LimitRingsApp: NSObject {
     private var mouseDragMonitor: Any?
     private var mouseUpMonitor: Any?
     private var mouseMoveMonitor: Any?
+    private var rightMouseDownMonitor: Any?
     private var startTime = Date()
     private var currentPetFrameAppKit: CGRect?
     private var dragCenterOffset: CGPoint?
     private var holdDraggedFrameUntil: Date?
     private var ringsVisible: Bool
+    private var isHovering = false
     private var stateReadInFlight = false
 
     init(config: LimitRingsConfig) {
@@ -688,6 +842,7 @@ final class LimitRingsApp: NSObject {
         self.frameReader = PetFrameReader(globalStatePath: config.globalStatePath)
         self.ringView = LimitRingView(frame: CGRect(origin: .zero, size: CGSize(width: config.fallbackSize, height: config.fallbackSize)))
         self.ringsVisible = UserDefaults.standard.object(forKey: ringsVisibleDefaultsKey) as? Bool ?? true
+        self.ringView.settings = RingVisualSettings.load()
         self.panel = NSPanel(
             contentRect: CGRect(origin: .zero, size: CGSize(width: config.fallbackSize, height: config.fallbackSize)),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -724,6 +879,7 @@ final class LimitRingsApp: NSObject {
         animationTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.ringView.phase = Date().timeIntervalSince(self.startTime) / 4.6
+            self.updateHoverAnimation()
         }
     }
 
@@ -753,6 +909,7 @@ final class LimitRingsApp: NSObject {
         guard let petFrame = frameReader.readPetFrameTopLeft() else {
             currentPetFrameAppKit = nil
             dragCenterOffset = nil
+            isHovering = false
             ringView.showsReadout = false
             panel.orderOut(nil)
             return
@@ -801,6 +958,8 @@ final class LimitRingsApp: NSObject {
         refreshItem.target = self
         menu.addItem(refreshItem)
 
+        menu.addItem(settingsMenuItem())
+
         menu.addItem(.separator())
 
         let quitItem = NSMenuItem(title: "Quit Codex Pet Limit Rings", action: #selector(quit(_:)), keyEquivalent: "q")
@@ -810,6 +969,75 @@ final class LimitRingsApp: NSObject {
         item.menu = menu
         updateSummaryMenuItem()
         updateShowRingsMenuItem()
+    }
+
+    private func settingsMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "Ring Settings", action: nil, keyEquivalent: "")
+        item.submenu = makeSettingsMenu()
+        return item
+    }
+
+    private func makeSettingsMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.addItem(colorSubmenu(title: "Outer Color", keyPath: \.outerColorName, action: #selector(setOuterColor(_:))))
+        menu.addItem(colorSubmenu(title: "Inner Color", keyPath: \.innerColorName, action: #selector(setInnerColor(_:))))
+        menu.addItem(.separator())
+        menu.addItem(valueSubmenu(title: "Idle Visibility", values: [
+            ("5%", 0.05),
+            ("10%", 0.10),
+            ("20%", 0.20),
+            ("35%", 0.35)
+        ], current: Double(ringView.settings.idleOpacity), action: #selector(setIdleOpacity(_:))))
+        menu.addItem(valueSubmenu(title: "Idle Size", values: [
+            ("Inside pet", 0.58),
+            ("Barely outside", 0.70),
+            ("Medium", 0.82)
+        ], current: Double(ringView.settings.idleScale), action: #selector(setIdleScale(_:))))
+        menu.addItem(.separator())
+        let reset = NSMenuItem(title: "Reset Ring Settings", action: #selector(resetRingSettings(_:)), keyEquivalent: "")
+        reset.target = self
+        menu.addItem(reset)
+        return menu
+    }
+
+    private func colorSubmenu(title: String, keyPath: KeyPath<RingVisualSettings, String>, action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let menu = NSMenu()
+        for option in colorOptions() {
+            let child = NSMenuItem(title: option.title, action: action, keyEquivalent: "")
+            child.target = self
+            child.representedObject = option.name
+            child.state = ringView.settings[keyPath: keyPath] == option.name ? .on : .off
+            menu.addItem(child)
+        }
+        item.submenu = menu
+        return item
+    }
+
+    private func valueSubmenu(title: String, values: [(String, Double)], current: Double, action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let menu = NSMenu()
+        for value in values {
+            let child = NSMenuItem(title: value.0, action: action, keyEquivalent: "")
+            child.target = self
+            child.representedObject = value.1
+            child.state = abs(current - value.1) < 0.001 ? .on : .off
+            menu.addItem(child)
+        }
+        item.submenu = menu
+        return item
+    }
+
+    private func colorOptions() -> [(title: String, name: String)] {
+        [
+            ("Mint", "mint"),
+            ("Teal", "teal"),
+            ("Blue", "blue"),
+            ("Violet", "violet"),
+            ("Pink", "pink"),
+            ("Gold", "gold"),
+            ("White", "white")
+        ]
     }
 
     private func makeStatusBarIcon() -> NSImage {
@@ -870,6 +1098,7 @@ final class LimitRingsApp: NSObject {
             panel.orderFrontRegardless()
             updateTooltip(at: NSEvent.mouseLocation)
         } else {
+            isHovering = false
             ringView.showsReadout = false
             panel.orderOut(nil)
         }
@@ -889,6 +1118,73 @@ final class LimitRingsApp: NSObject {
         updateState()
         updateFrame()
         updateRingVisibility()
+    }
+
+    @objc private func setOuterColor(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        var settings = ringView.settings
+        settings.outerColorName = name
+        applyRingSettings(settings)
+    }
+
+    @objc private func setInnerColor(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        var settings = ringView.settings
+        settings.innerColorName = name
+        applyRingSettings(settings)
+    }
+
+    @objc private func setIdleOpacity(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? Double else { return }
+        var settings = ringView.settings
+        settings.idleOpacity = CGFloat(value)
+        applyRingSettings(settings)
+    }
+
+    @objc private func setIdleScale(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? Double else { return }
+        var settings = ringView.settings
+        settings.idleScale = CGFloat(value)
+        applyRingSettings(settings)
+    }
+
+    @objc private func resetRingSettings(_ sender: NSMenuItem) {
+        RingVisualSettings.reset()
+        applyRingSettings(.load())
+    }
+
+    private func applyRingSettings(_ settings: RingVisualSettings) {
+        settings.save()
+        ringView.settings = settings
+        statusItem?.menu = rebuildStatusMenu()
+    }
+
+    private func rebuildStatusMenu() -> NSMenu {
+        let menu = NSMenu()
+        let summary = NSMenuItem(title: summaryItem?.title ?? "Waiting for Codex limit data", action: nil, keyEquivalent: "")
+        summary.isEnabled = false
+        menu.addItem(summary)
+        summaryItem = summary
+
+        menu.addItem(.separator())
+
+        let showItem = NSMenuItem(title: "Show Rings", action: #selector(toggleRings(_:)), keyEquivalent: "")
+        showItem.target = self
+        menu.addItem(showItem)
+        showRingsItem = showItem
+
+        let refreshItem = NSMenuItem(title: "Refresh Now", action: #selector(refreshNow(_:)), keyEquivalent: "r")
+        refreshItem.target = self
+        menu.addItem(refreshItem)
+        menu.addItem(settingsMenuItem())
+        menu.addItem(.separator())
+
+        let quitItem = NSMenuItem(title: "Quit Codex Pet Limit Rings", action: #selector(quit(_:)), keyEquivalent: "q")
+        quitItem.target = self
+        menu.addItem(quitItem)
+        updateShowRingsMenuItem()
+        updateSummaryMenuItem()
+        return menu
     }
 
     @objc private func quit(_ sender: NSMenuItem) {
@@ -916,6 +1212,11 @@ final class LimitRingsApp: NSObject {
                 self?.updateTooltip(at: NSEvent.mouseLocation)
             }
         }
+        rightMouseDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.rightMouseDown]) { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.showSettingsMenuIfNeeded(at: NSEvent.mouseLocation)
+            }
+        }
     }
 
     private func beginDragFollowIfNeeded(at mouse: CGPoint) {
@@ -935,6 +1236,7 @@ final class LimitRingsApp: NSObject {
         let center = CGPoint(x: mouse.x + offset.x, y: mouse.y + offset.y)
         let origin = CGPoint(x: center.x - size.width / 2, y: center.y - size.height / 2)
         panel.setFrame(CGRect(origin: origin, size: size), display: true)
+        isHovering = false
         ringView.showsReadout = false
     }
 
@@ -947,13 +1249,35 @@ final class LimitRingsApp: NSObject {
         }
     }
 
+    private func updateHoverAnimation() {
+        let target: CGFloat = isHovering ? 1.0 : 0.0
+        let current = ringView.hoverProgress
+        let step: CGFloat = target > current ? 0.16 : 0.12
+        let next = current + (target - current) * step
+        if abs(next - target) < 0.01 {
+            ringView.hoverProgress = target
+        } else {
+            ringView.hoverProgress = next
+        }
+    }
+
     private func updateTooltip(at mouse: CGPoint) {
         if !ringsVisible || currentPetFrameAppKit == nil || dragCenterOffset != nil {
+            isHovering = false
             ringView.showsReadout = false
             return
         }
 
-        ringView.showsReadout = isHoveringRingOrPet(mouse)
+        isHovering = isHoveringRingOrPet(mouse)
+        ringView.showsReadout = isHovering
+    }
+
+    private func showSettingsMenuIfNeeded(at mouse: CGPoint) {
+        guard ringsVisible, isHoveringRingOrPet(mouse) else { return }
+        isHovering = true
+        ringView.showsReadout = true
+        let menu = makeSettingsMenu()
+        menu.popUp(positioning: nil, at: mouse, in: nil)
     }
 
     private func isHoveringRingOrPet(_ mouse: CGPoint) -> Bool {
