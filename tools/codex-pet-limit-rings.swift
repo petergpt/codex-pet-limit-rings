@@ -324,7 +324,7 @@ final class PetFrameReader {
         return windows.compactMap { window -> CGRect? in
             let maxWidthDelta = max(80.0, expectedSize.width * 0.55)
             let maxHeightDelta = max(80.0, expectedSize.height * 0.55)
-            guard (window[kCGWindowOwnerName as String] as? String) == "Codex",
+            guard isCodexWindow(window),
                   let layer = number(window[kCGWindowLayer as String]),
                   layer > 0,
                   let bounds = window[kCGWindowBounds as String] as? [String: Any],
@@ -344,6 +344,18 @@ final class PetFrameReader {
         .min {
             liveOverlayScore($0, reference: reference, expectedSize: expectedSize) < liveOverlayScore($1, reference: reference, expectedSize: expectedSize)
         }
+    }
+
+    private func isCodexWindow(_ window: [String: Any]) -> Bool {
+        if let ownerPID = window[kCGWindowOwnerPID as String] as? NSNumber,
+           let runningApplication = NSRunningApplication(processIdentifier: pid_t(ownerPID.int32Value)),
+           runningApplication.bundleIdentifier == "com.openai.codex" {
+            return true
+        }
+
+        // Older standalone Codex builds may not expose enough process metadata
+        // for bundle-identifier matching.
+        return (window[kCGWindowOwnerName as String] as? String) == "Codex"
     }
 
     private func liveOverlayScore(_ rect: CGRect, reference: CGRect, expectedSize: CGSize) -> CGFloat {
