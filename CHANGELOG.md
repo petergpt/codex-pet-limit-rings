@@ -16,3 +16,4 @@ Notable changes to `codex-pet-limit-rings` are recorded here.
 ### Fixed
 
 - Cross-display pet drags bridge brief live-overlay coordinate gaps from the mouse-to-pet offset instead of waiting for persisted pet state to catch up.
+- Rings remain attached on current Codex builds that persist only the pet's top-level anchor coordinates without a nested mascot rectangle.

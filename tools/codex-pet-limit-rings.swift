@@ -32,6 +32,7 @@ private let dragFollowInterval: TimeInterval = 1.0 / 60.0
 private let dragLiveMismatchTolerance: CGFloat = 96.0
 private let ringsVisibleDefaultsKey = "CodexPetLimitRings.ringsVisible"
 private let liveUsageURL = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
+private let defaultMascotSize = CGSize(width: 112, height: 121)
 
 private struct EventPayload: Decodable {
     var type: String
@@ -270,22 +271,37 @@ final class PetFrameReader {
               isAvatarOverlayOpen(root),
               let bounds = root["electron-avatar-overlay-bounds"] as? [String: Any],
               let x = number(bounds["x"]),
-              let y = number(bounds["y"]),
-              let overlayWidth = number(bounds["width"]),
-              let overlayHeight = number(bounds["height"]),
-              let mascotPayload = bounds["mascot"] as? [String: Any],
-              let left = number(mascotPayload["left"]),
-              let top = number(mascotPayload["top"]),
-              let width = number(mascotPayload["width"]),
-              let height = number(mascotPayload["height"]) else {
+              let y = number(bounds["y"]) else {
             return nil
         }
 
-        let persistedOverlay = CGRect(x: x, y: y, width: overlayWidth, height: overlayHeight)
-        let liveOverlay = preferLiveOverlay ? liveCodexOverlayBounds(matching: liveReference ?? persistedOverlay, expectedSize: persistedOverlay.size) : nil
-        let overlay = liveOverlay ?? persistedOverlay
-        let mascot = CGRect(x: overlay.minX + left, y: overlay.minY + top, width: width, height: height)
-        return PetFramesTopLeft(mascot: mascot, overlay: overlay, usedLiveOverlay: liveOverlay != nil)
+        if let mascotPayload = bounds["mascot"] as? [String: Any],
+           let left = number(mascotPayload["left"]),
+           let top = number(mascotPayload["top"]),
+           let width = number(mascotPayload["width"]),
+           let height = number(mascotPayload["height"]) {
+            let overlayWidth = number(bounds["width"]) ?? max(left + width, width)
+            let overlayHeight = number(bounds["height"]) ?? max(top + height, height)
+            let persistedOverlay = CGRect(x: x, y: y, width: overlayWidth, height: overlayHeight)
+            let liveOverlay = preferLiveOverlay ? liveCodexOverlayBounds(matching: liveReference ?? persistedOverlay, expectedSize: persistedOverlay.size) : nil
+            let overlay = liveOverlay ?? persistedOverlay
+            let mascot = CGRect(x: overlay.minX + left, y: overlay.minY + top, width: width, height: height)
+            return PetFramesTopLeft(mascot: mascot, overlay: overlay, usedLiveOverlay: liveOverlay != nil)
+        }
+
+        if let anchor = bounds["anchor"] as? [String: Any],
+           let anchorX = number(anchor["x"]),
+           let anchorY = number(anchor["y"]),
+           let width = number(anchor["width"]),
+           let height = number(anchor["height"]) {
+            let mascot = CGRect(x: anchorX, y: anchorY, width: width, height: height)
+            return PetFramesTopLeft(mascot: mascot, overlay: mascot, usedLiveOverlay: false)
+        }
+
+        // Current Codex builds persist the mascot anchor directly as x/y and
+        // omit the previously nested mascot and overlay rectangles.
+        let mascot = CGRect(origin: CGPoint(x: x, y: y), size: defaultMascotSize)
+        return PetFramesTopLeft(mascot: mascot, overlay: mascot, usedLiveOverlay: false)
     }
 
     func readPetFrameTopLeft(preferLiveOverlay: Bool = false) -> CGRect? {
@@ -324,7 +340,8 @@ final class PetFrameReader {
         return windows.compactMap { window -> CGRect? in
             let maxWidthDelta = max(80.0, expectedSize.width * 0.55)
             let maxHeightDelta = max(80.0, expectedSize.height * 0.55)
-            guard (window[kCGWindowOwnerName as String] as? String) == "Codex",
+            let ownerName = window[kCGWindowOwnerName as String] as? String
+            guard ownerName == "Codex" || ownerName == "ChatGPT",
                   let layer = number(window[kCGWindowLayer as String]),
                   layer > 0,
                   let bounds = window[kCGWindowBounds as String] as? [String: Any],

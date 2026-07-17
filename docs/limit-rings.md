@@ -22,7 +22,7 @@ The app reads live usage first, then local files as support or fallback:
 
 - `https://chatgpt.com/backend-api/wham/usage`: live usage endpoint, called with the local ChatGPT access token from `~/.codex/auth.json`.
 - `~/.codex/auth.json`: local ChatGPT auth token used for the live usage call.
-- `~/.codex/.codex-global-state.json`: current pet bounds, using `electron-avatar-overlay-bounds.mascot`.
+- `~/.codex/.codex-global-state.json`: current pet bounds. Older Codex builds provide a nested `electron-avatar-overlay-bounds.mascot` rectangle; current builds persist the mascot anchor directly as top-level `x` and `y` coordinates. The companion supports both formats.
 - `electron-avatar-overlay-open` in the same state file: whether the Codex pet is currently open.
 - `~/.codex/logs_2.sqlite`: fallback source using the newest `codex.rate_limits` event when the live usage call fails.
 
