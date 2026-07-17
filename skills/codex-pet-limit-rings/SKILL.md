@@ -61,7 +61,7 @@ launchctl print "gui/$(id -u)/com.codex-pet.limit-rings" >/dev/null
 The rings read:
 
 - `~/.codex/auth.json` for a local ChatGPT access token, then `https://chatgpt.com/backend-api/wham/usage` for live usage data.
-- `~/.codex/.codex-global-state.json` for `electron-avatar-overlay-open` and `electron-avatar-overlay-bounds.mascot`.
+- `~/.codex/.codex-global-state.json` for `electron-avatar-overlay-open` and `electron-avatar-overlay-bounds`. Support both the older nested `mascot` rectangle and the current anchor-only `x`/`y` format.
 - `~/.codex/logs_2.sqlite` for fallback to the newest `codex.rate_limits` event when live usage fails.
 
 The outer ring is the short-window remaining percentage. The inner ring is the weekly remaining percentage. The menu summary should say `Live` when direct usage succeeds and `Cached` when the local log fallback is active.
