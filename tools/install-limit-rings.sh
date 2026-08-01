@@ -38,6 +38,11 @@ cat > "$AGENT" <<PLIST
   </array>
   <key>RunAtLoad</key>
   <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
   <key>LimitLoadToSessionType</key>
   <string>Aqua</string>
   <key>StandardOutPath</key>
@@ -48,6 +53,7 @@ cat > "$AGENT" <<PLIST
 </plist>
 PLIST
 
+launchctl enable "$GUI_TARGET/com.codex-pet.limit-rings"
 launchctl bootstrap "$GUI_TARGET" "$AGENT"
 launchctl kickstart -k "$GUI_TARGET/com.codex-pet.limit-rings"
 

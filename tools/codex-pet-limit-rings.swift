@@ -27,9 +27,16 @@ struct LimitState {
 
 private let limitStatePollInterval: TimeInterval = 20.0
 private let petFrameFallbackPollInterval: TimeInterval = 2.0
-private let petFrameStateDebounceInterval: TimeInterval = 0.035
 private let dragFollowInterval: TimeInterval = 1.0 / 60.0
 private let dragLiveMismatchTolerance: CGFloat = 96.0
+private let petFrameFastPollInterval: TimeInterval = 1.0 / 20.0
+private let petFrameFastPollDuration: TimeInterval = 1.2
+private let petFrameStateDebounceInterval: TimeInterval = 0.012
+private let petFrameDragSettleInterval: TimeInterval = 0.18
+private let compactRingPetPadding: CGFloat = 31.0
+private let compactRingPetFrameScale: CGFloat = 0.64
+private let compactRingPetCenterYOffsetRatio: CGFloat = 0.19
+private let codexBundleIdentifier = "com.openai.codex"
 private let ringsVisibleDefaultsKey = "CodexPetLimitRings.ringsVisible"
 private let liveUsageURL = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
 
@@ -86,7 +93,7 @@ struct LimitRingsConfig {
     var logsPath: URL
     var authPath: URL
     var previewPath: URL?
-    var fallbackSize: CGFloat = 220
+    var fallbackSize: CGFloat = 158
 }
 
 final class LimitStateReader {
@@ -377,8 +384,8 @@ struct LimitRingRenderer {
         let urgency = max(urgency(for: state.primary), urgency(for: state.secondary))
         let breathe = CGFloat((sin(phase * 2.0 * .pi) + 1.0) * 0.5)
         let pulse = CGFloat(1.0 + urgency * 0.025 * breathe)
-        let outerRadius = (minSide * 0.5 - 16.0) * pulse
-        let innerRadius = outerRadius - 13.0
+        let outerRadius = (minSide * 0.5 - 12.0) * pulse
+        let innerRadius = outerRadius - 8.5
 
         drawHalo(context, center: center, radius: outerRadius, urgency: CGFloat(urgency), breathe: breathe)
         drawTicks(context, center: center, radius: outerRadius + 5.0)
@@ -388,14 +395,14 @@ struct LimitRingRenderer {
                 context,
                 center: center,
                 radius: outerRadius,
-                lineWidth: 7.0,
+                lineWidth: 4.5,
                 bucket: primary,
                 color: color(forRemaining: primary.remainingPercent, role: .primary),
-                trackAlpha: 0.20,
+                trackAlpha: 0.16,
                 phase: phase
             )
         } else {
-            drawMissingRing(context, center: center, radius: outerRadius, lineWidth: 7.0)
+            drawMissingRing(context, center: center, radius: outerRadius, lineWidth: 4.5)
         }
 
         if let secondary = state.secondary {
@@ -403,10 +410,10 @@ struct LimitRingRenderer {
                 context,
                 center: center,
                 radius: innerRadius,
-                lineWidth: 4.5,
+                lineWidth: 3.0,
                 bucket: secondary,
                 color: color(forRemaining: secondary.remainingPercent, role: .secondary),
-                trackAlpha: 0.14,
+                trackAlpha: 0.12,
                 phase: phase + 0.18
             )
         }
@@ -441,13 +448,13 @@ struct LimitRingRenderer {
         context.saveGState()
         let color = NSColor(calibratedRed: 0.23 + urgency * 0.55, green: 0.85 - urgency * 0.30, blue: 0.78 - urgency * 0.48, alpha: 0.22 + urgency * 0.16)
         context.setLineCap(.round)
-        context.setShadow(offset: .zero, blur: 14.0 + urgency * breathe * 5.0, color: color.withAlphaComponent(0.55).cgColor)
-        context.setStrokeColor(color.withAlphaComponent(0.20).cgColor)
-        context.setLineWidth(8.0)
+        context.setShadow(offset: .zero, blur: 8.0 + urgency * breathe * 3.0, color: color.withAlphaComponent(0.38).cgColor)
+        context.setStrokeColor(color.withAlphaComponent(0.14).cgColor)
+        context.setLineWidth(4.0)
         context.addArc(center: center, radius: radius + 3.0, startAngle: 0, endAngle: CGFloat.pi * 2.0, clockwise: false)
         context.strokePath()
         context.setShadow(offset: .zero, blur: 0.0, color: nil)
-        context.setStrokeColor(NSColor(calibratedWhite: 1.0, alpha: 0.045).cgColor)
+        context.setStrokeColor(NSColor(calibratedWhite: 1.0, alpha: 0.035).cgColor)
         context.setLineWidth(1.0)
         context.addArc(center: center, radius: radius + 13.0, startAngle: 0, endAngle: CGFloat.pi * 2.0, clockwise: false)
         context.strokePath()
@@ -496,13 +503,13 @@ struct LimitRingRenderer {
         context.addArc(center: center, radius: radius, startAngle: 0, endAngle: CGFloat.pi * 2.0, clockwise: false)
         context.strokePath()
 
-        context.setShadow(offset: .zero, blur: 10.0, color: color.withAlphaComponent(0.42).cgColor)
-        context.setStrokeColor(color.withAlphaComponent(0.30).cgColor)
-        context.setLineWidth(lineWidth + 6.0)
+        context.setShadow(offset: .zero, blur: 6.0, color: color.withAlphaComponent(0.32).cgColor)
+        context.setStrokeColor(color.withAlphaComponent(0.22).cgColor)
+        context.setLineWidth(lineWidth + 3.0)
         context.addArc(center: center, radius: radius, startAngle: start, endAngle: end, clockwise: false)
         context.strokePath()
 
-        context.setShadow(offset: .zero, blur: 4.0, color: color.withAlphaComponent(0.52).cgColor)
+        context.setShadow(offset: .zero, blur: 3.0, color: color.withAlphaComponent(0.40).cgColor)
         context.setStrokeColor(color.cgColor)
         context.setLineWidth(lineWidth)
         context.addArc(center: center, radius: radius, startAngle: start, endAngle: end, clockwise: false)
@@ -805,6 +812,8 @@ final class LimitRingsApp: NSObject {
     private var showRingsItem: NSMenuItem?
     private var stateTimer: Timer?
     private var frameTimer: Timer?
+    private var codexWatchTimer: Timer?
+    private var fastFrameTimer: Timer?
     private var animationTimer: Timer?
     private var dragFollowTimer: Timer?
     private var mouseDownMonitor: Any?
@@ -821,6 +830,7 @@ final class LimitRingsApp: NSObject {
     private var isTrackingMouseDrag = false
     private var dragMouseToPetOriginOffsetAppKit: CGPoint?
     private var dragMouseToOverlayOriginOffsetAppKit: CGPoint?
+    private var fastFramePollUntil: Date?
     private var holdDraggedFrameUntil: Date?
     private var ringsVisible: Bool
     private var stateReadInFlight = false
@@ -852,6 +862,8 @@ final class LimitRingsApp: NSObject {
     deinit {
         stateTimer?.invalidate()
         frameTimer?.invalidate()
+        codexWatchTimer?.invalidate()
+        fastFrameTimer?.invalidate()
         animationTimer?.invalidate()
         dragFollowTimer?.invalidate()
         pendingGlobalStateWatcherRestart?.cancel()
@@ -868,12 +880,16 @@ final class LimitRingsApp: NSObject {
         updateFrame()
         installGlobalStateWatcher()
         updateRingVisibility()
+        startFastFramePolling()
 
         stateTimer = Timer.scheduledTimer(withTimeInterval: limitStatePollInterval, repeats: true) { [weak self] _ in
             self?.updateState()
         }
         frameTimer = Timer.scheduledTimer(withTimeInterval: petFrameFallbackPollInterval, repeats: true) { [weak self] _ in
             self?.updateFrame()
+        }
+        codexWatchTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            self?.refreshCodexAvailability()
         }
         installDragFollow()
         animationTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
@@ -950,9 +966,40 @@ final class LimitRingsApp: NSObject {
         }
         pendingFrameUpdate = work
         DispatchQueue.main.asyncAfter(deadline: .now() + petFrameStateDebounceInterval, execute: work)
+        startFastFramePolling()
+    }
+
+    private func startFastFramePolling(for duration: TimeInterval = petFrameFastPollDuration) {
+        let until = Date().addingTimeInterval(duration)
+        if let fastFramePollUntil, fastFramePollUntil > until {
+            return
+        }
+        fastFramePollUntil = until
+        if fastFrameTimer != nil {
+            return
+        }
+
+        fastFrameTimer = Timer.scheduledTimer(withTimeInterval: petFrameFastPollInterval, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+            if let until = self.fastFramePollUntil, Date() <= until {
+                self.updateFrame()
+                return
+            }
+
+            self.fastFramePollUntil = nil
+            self.fastFrameTimer = nil
+            timer.invalidate()
+        }
     }
 
     private func updateFrame(preferLiveOverlay: Bool = false) {
+        guard isCodexRunning() else {
+            hideForUnavailableCodex()
+            return
+        }
         if let holdDraggedFrameUntil, Date() < holdDraggedFrameUntil {
             return
         }
@@ -995,20 +1042,77 @@ final class LimitRingsApp: NSObject {
         }
     }
 
-    private func setPanelFrame(forPetFrameTopLeft petFrame: CGRect) {
-        let padding: CGFloat = 38
-        let size = max(petFrame.width, petFrame.height) + padding * 2
-        let topLeft = CGPoint(x: petFrame.midX - size / 2, y: petFrame.midY - size / 2)
-        let origin = appKitOriginFromTopLeft(topLeft, size: CGSize(width: size, height: size))
+    private func hideForUnavailableCodex() {
+        currentPetFrameAppKit = nil
+        currentPetOverlayTopLeft = nil
+        currentPetOverlayFrameAppKit = nil
+        isTrackingMouseDrag = false
+        dragMouseToPetOriginOffsetAppKit = nil
+        dragMouseToOverlayOriginOffsetAppKit = nil
+        stopDragFollowTimer()
+        ringView.showsReadout = false
+        panel.orderOut(nil)
+    }
 
-        panel.setFrame(CGRect(origin: origin, size: CGSize(width: size, height: size)), display: true)
+    private func refreshCodexAvailability() {
+        if isCodexRunning() {
+            updateState()
+            updateFrame()
+            startFastFramePolling()
+        } else {
+            hideForUnavailableCodex()
+        }
+    }
+
+    private func isCodexRunning() -> Bool {
+        if !NSRunningApplication.runningApplications(withBundleIdentifier: codexBundleIdentifier).isEmpty {
+            return true
+        }
+
+        return NSWorkspace.shared.runningApplications.contains { app in
+            if app.bundleIdentifier == codexBundleIdentifier {
+                return true
+            }
+            if app.localizedName == "Codex" {
+                return true
+            }
+            return app.bundleURL?.path == "/Applications/Codex.app"
+        }
+    }
+
+    private func setPanelFrame(forPetFrameTopLeft petFrame: CGRect) {
+        let padding = compactRingPetPadding
+        let targetPetSide = max(petFrame.width, petFrame.height) * compactRingPetFrameScale
+        let size = targetPetSide + padding * 2
+        let center = CGPoint(
+            x: petFrame.midX,
+            y: petFrame.midY + petFrame.height * compactRingPetCenterYOffsetRatio
+        )
+        let topLeft = CGPoint(x: center.x - size / 2, y: center.y - size / 2)
+        let origin = appKitOriginFromTopLeft(topLeft, size: CGSize(width: size, height: size))
+        let targetFrame = CGRect(origin: origin, size: CGSize(width: size, height: size))
+
+        if !approximatelyEqual(panel.frame, targetFrame) {
+            panel.setFrame(targetFrame, display: true)
+        }
     }
 
     private func setPanelFrame(forPetFrameAppKit petFrame: CGRect) {
-        let padding: CGFloat = 38
-        let size = max(petFrame.width, petFrame.height) + padding * 2
-        let origin = CGPoint(x: petFrame.midX - size / 2, y: petFrame.midY - size / 2)
-        panel.setFrame(CGRect(origin: origin, size: CGSize(width: size, height: size)), display: true)
+        let targetPetSide = max(petFrame.width, petFrame.height) * compactRingPetFrameScale
+        let size = targetPetSide + compactRingPetPadding * 2
+        let center = CGPoint(
+            x: petFrame.midX,
+            y: petFrame.midY - petFrame.height * compactRingPetCenterYOffsetRatio
+        )
+        let targetFrame = CGRect(
+            x: center.x - size / 2,
+            y: center.y - size / 2,
+            width: size,
+            height: size
+        )
+        if !approximatelyEqual(panel.frame, targetFrame) {
+            panel.setFrame(targetFrame, display: true)
+        }
     }
 
     private func installStatusMenu() {
@@ -1125,6 +1229,7 @@ final class LimitRingsApp: NSObject {
     @objc private func refreshNow(_ sender: NSMenuItem) {
         updateState()
         updateFrame()
+        startFastFramePolling()
         updateRingVisibility()
     }
 
@@ -1189,9 +1294,11 @@ final class LimitRingsApp: NSObject {
         dragMouseToPetOriginOffsetAppKit = nil
         dragMouseToOverlayOriginOffsetAppKit = nil
         stopDragFollowTimer()
-        holdDraggedFrameUntil = Date().addingTimeInterval(0.18)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
+        holdDraggedFrameUntil = Date().addingTimeInterval(petFrameDragSettleInterval)
+        startFastFramePolling()
+        DispatchQueue.main.asyncAfter(deadline: .now() + petFrameDragSettleInterval + 0.02) { [weak self] in
             self?.updateFrame()
+            self?.startFastFramePolling()
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             self?.updateFrame()
@@ -1427,6 +1534,14 @@ final class LimitRingsApp: NSObject {
         let dx = point.x - clampedX
         let dy = point.y - clampedY
         return dx * dx + dy * dy
+    }
+
+    private func approximatelyEqual(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
+        let epsilon: CGFloat = 0.5
+        return abs(lhs.minX - rhs.minX) < epsilon
+            && abs(lhs.minY - rhs.minY) < epsilon
+            && abs(lhs.width - rhs.width) < epsilon
+            && abs(lhs.height - rhs.height) < epsilon
     }
 
     private func formatPercent(_ percent: Double) -> String {
