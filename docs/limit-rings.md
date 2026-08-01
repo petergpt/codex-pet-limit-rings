@@ -12,9 +12,12 @@ The rings are pet-agnostic. They work with any pet Codex displays because the ap
 - Hovering over the ring or pet shows exact remaining percentages at the arc endpoints.
 - Dragging the pet makes the rings follow the gesture immediately while Codex persists the new position.
 - Closing the Codex pet hides the rings.
+- Closing Codex hides the rings while the companion stays resident, so it can
+  reattach when Codex starts again after login.
 - Multi-display positioning uses the screen containing the pet bounds, not the currently focused screen.
 - macOS desktop/Space switching keeps the rings visible with the pet rather than tying them to one active desktop.
 - Switching to another Codex pet requires no extra setup; the overlay follows the active pet.
+- Compact sizing is tuned for 14-inch MacBook screens: the overlay follows the smaller visible pet body and alpha-center offset, with thin rings placed outside the character silhouette instead of over the pet.
 
 ## Data Flow
 
@@ -52,7 +55,10 @@ and installs:
 ~/Library/LaunchAgents/com.codex-pet.limit-rings.plist
 ```
 
-The LaunchAgent starts the app at login. The installer also removes the earlier prototype app and LaunchAgent names if present:
+The LaunchAgent starts the app at login and restarts it after unsuccessful
+exits while still allowing an intentional normal quit from the menu. The
+installer also removes the earlier prototype app and LaunchAgent names if
+present:
 
 ```text
 ~/Applications/CodexLimitAura.app
@@ -60,6 +66,16 @@ The LaunchAgent starts the app at login. The installer also removes the earlier 
 ```
 
 `tools/uninstall-limit-rings.sh` unloads the LaunchAgent, removes the app bundle, clears the saved ring visibility preference, and also cleans up those earlier prototype names.
+
+For a manual-only install with no login startup, use:
+
+```bash
+tools/install-limit-rings-manual.sh
+```
+
+This removes any existing LaunchAgent, rebuilds `~/Applications/CodexPetLimitRings.app`, and launches it once without creating a login item.
+The companion remains resident when Codex is not running, but hides the overlay
+until Codex and the pet are visible again.
 
 ## Development
 

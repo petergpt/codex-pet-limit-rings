@@ -18,7 +18,7 @@ The rings are designed to be glanceable:
 - Hovering over the pet or rings shows the exact percentages at the current ring endpoints.
 - A small menu-bar icon lets you hide the rings, refresh data, or quit.
 
-When the Codex pet is closed, the rings disappear. When the pet comes back, they come back too. On multi-display setups, the rings stay with the pet instead of jumping to whichever screen is focused.
+When the Codex pet is closed, the rings disappear. When Codex or the pet comes back, they come back too. On multi-display setups, the rings stay with the pet instead of jumping to whichever screen is focused.
 
 Because the rings are drawn in a separate transparent overlay, they do not need pet-specific sprites, masks, metadata, or configuration. Change pets in Codex and the rings follow the new one automatically.
 
